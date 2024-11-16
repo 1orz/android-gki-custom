@@ -1,0 +1,128 @@
+name: Android12-5.10-Custom
+
+on:
+  push:
+  schedule:
+    - cron: '0 0 * * *'
+  workflow_dispatch:
+    inputs:
+      os_patch_level:
+        required: false
+        type: string
+        description: >
+          Patch level of common kernel manifest,
+          for example: 2024-08
+      os_version:
+        required: true
+        type: string
+        default: 12.0.0
+        description: >
+          OS Version of boot image
+          for example: 12.0.0
+      version_name:
+        required: true
+        type: string
+        default: android12-5.10.226
+        description: >
+          With sublevel of kernel,
+          for example: android12-5.10.226
+      custom:
+        required: true
+        type: boolean
+        default: true
+        description: >
+          Enable LXC, Docker features
+      kernelsu:
+        required: true
+        type: boolean
+        default: true
+        description: >
+          Enable KernelSU
+      kernelsu_branch:
+        required: false
+        type: string
+        default: latest
+        description: >
+          Branch or version of KernelSU to use,
+          for example: main, latest, v0.5.2
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Install Dependencies
+        env:
+          DEBIAN_FRONTEND: noninteractive
+        run: |
+          sudo rm -rf /etc/apt/sources.list.d/*
+          sudo apt update -qq
+          sudo apt install -qq wget repo
+          curl -o repo https://storage.googleapis.com/git-repo-downloads/repo
+          chmod a+x repo
+          sudo mv repo /usr/local/bin/
+
+      - name: Sync the kernel source code
+        run: |
+          mkdir android-kernel && cd android-kernel
+          repo init --depth 1 -u https://android.googlesource.com/kernel/manifest -b common-android12-5.10${{ github.event.inputs.os_patch_level && '-' || '' }}${{ github.event.inputs.os_patch_level || '' }}
+          repo sync -c -j$(nproc --all) --no-clone-bundle --optimized-fetch
+
+      - name: Apply patches and configuration files
+        if: ${{ github.event.inputs.custom == 'true' || github.event_name == 'schedule' }}
+        run: |
+          cp ./config/gki_defconfig-android12-5.10 ./android-kernel/common/arch/arm64/configs/gki_defconfig
+          cd android-kernel/common
+          git apply $GITHUB_WORKSPACE/patches/android12-5.10/*.patch
+
+      - name: KernelSU
+        if: ${{ github.event.inputs.kernelsu == 'true' || github.event_name == 'schedule' }}
+        run: |
+          cd android-kernel/common
+          if [[ "${{ github.event.inputs.kernelsu_branch || 'latest' }}" == "main" ]]; then
+            curl -LSs "https://raw.githubusercontent.com/tiann/KernelSU/main/kernel/setup.sh" | bash -s main
+          elif [[ "${{ github.event.inputs.kernelsu_branch || 'latest' }}" == "latest" ]]; then
+            curl -LSs "https://raw.githubusercontent.com/tiann/KernelSU/main/kernel/setup.sh" | bash -
+          else
+            curl -LSs "https://raw.githubusercontent.com/tiann/KernelSU/main/kernel/setup.sh" | bash -s ${{ github.event.inputs.kernelsu_branch || 'latest' }}
+          fi
+
+      - name: Commit changes
+        if: ${{ github.event.inputs.custom == 'true' || github.event.inputs.kernelsu == 'true' || github.event_name == 'schedule' }}
+        run: |
+          git config --global user.email "cloudorzi@gmail.com"
+          git config --global user.name "1orz"
+          cd android-kernel/common
+          git add .
+          git commit -m "Custom Kernel"
+          git status
+
+      - name: Build Kernel
+        run: |
+          cd android-kernel
+          BUILD_CONFIG=common/build.config.gki.aarch64 build/config.sh savedefconfig
+          LTO=thin BUILD_CONFIG=common/build.config.gki.aarch64 build/build.sh -j$(nproc)
+
+      - name: Build boot.img
+        run: |
+          cd android-kernel/tools/mkbootimg
+          wget -q https://dl.google.com/android/gki/gki-certified-boot-android12-5.10-2024-08_r4.zip -O gki-boot.zip
+          unzip -q gki-boot.zip
+          PATCH_LEVEL=${{ github.event.inputs.os_patch_level || '2024-08' }}
+          ./unpack_bootimg.py --boot_img boot*.img
+          ./mkbootimg.py --header_version 4 --os_version ${{ github.event.inputs.os_version || '12.0.0' }} --os_patch_level ${PATCH_LEVEL} --kernel $GITHUB_WORKSPACE/android-kernel/out/android12-5.10/dist/Image --ramdisk out/ramdisk --output boot.img
+
+      - name: Prepare artifacts
+        run: |
+          mkdir -p artifacts
+          cp android-kernel/out/android12-5.10/dist/Image artifacts/
+          cp android-kernel/tools/mkbootimg/boot.img artifacts/
+
+      - name: Upload Image and Image.gz and boot.img
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ github.event.inputs.version_name || 'android12-5.10.226' }}${{ github.event.inputs.os_patch_level && github.event.inputs.os_patch_level != '' && '-' || '' }}${{ github.event.inputs.os_patch_level || '' }}
+          path: artifacts
