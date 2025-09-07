@@ -79,6 +79,7 @@ jobs:
       - name: Apply patches and configuration files
         if: ${{ github.event.inputs.custom == 'true' || github.event_name == 'schedule' }}
         run: |
+          mkdir -p ./android-kernel/common/arch/arm64/configs/
           cp ./config/gki_defconfig-android12-5.10 ./android-kernel/common/arch/arm64/configs/gki_defconfig
           cd android-kernel/common
           git apply $GITHUB_WORKSPACE/patches/android12-5.10/*.patch
@@ -162,6 +163,7 @@ jobs:
       - name: Apply patches and configuration files
         if: ${{ github.event.inputs.custom == 'true' || github.event_name == 'schedule' }}
         run: |
+          mkdir -p ./android-kernel/common/arch/arm64/configs/
           cp ./config/gki_defconfig-android12-5.10 ./android-kernel/common/arch/arm64/configs/gki_defconfig
           cd android-kernel/common
           git apply $GITHUB_WORKSPACE/patches/android12-5.10/*.patch
